@@ -3,41 +3,56 @@ import SwiftUI
 
 @MainActor
 final class OverlayModel: ObservableObject {
-    static let barCount = 28
+    static let barCount = 9
+    /// The latest level sits in the center bar and older ones ripple out to the sides.
+    private static let historyLength = barCount / 2 + 1
+    /// Bars are taller in the middle, like a voice.
+    private static let profile: [CGFloat] = [0.45, 0.6, 0.75, 0.9, 1, 0.9, 0.75, 0.6, 0.45]
 
-    @Published var levels = [CGFloat](repeating: 0, count: barCount)
+    @Published private(set) var bars = [CGFloat](repeating: 0, count: barCount)
     @Published var isTranscribing = false
-    @Published var isLocked = false
+    /// When hands-free started; `nil` while holding the key.
+    @Published var lockedSince: Date?
+    /// How to stop hands-free, e.g. "tap Right ⌘ to finish · esc to cancel".
+    @Published var lockedHint = ""
     /// A short notice shown instead of the waveform.
     @Published var message: String?
+    @Published var isError = false
+
+    private var history = [CGFloat](repeating: 0, count: historyLength)
 
     /// Adds the latest microphone RMS, mapped from dB so quiet speech still moves the bars.
     func push(rms: Float) {
         let db = 20 * log10(max(rms, 1e-5))
-        let normalized = min(max((db + 55) / 40, 0), 1)
-        levels.removeFirst()
-        levels.append(CGFloat(normalized))
+        history.insert(CGFloat(min(max((db + 55) / 40, 0), 1)), at: 0)
+        history.removeLast()
+        let center = Self.barCount / 2
+        bars = (0..<Self.barCount).map { history[abs($0 - center)] * Self.profile[$0] }
     }
 
     func reset() {
-        levels = [CGFloat](repeating: 0, count: Self.barCount)
+        history = [CGFloat](repeating: 0, count: Self.historyLength)
+        bars = [CGFloat](repeating: 0, count: Self.barCount)
         isTranscribing = false
-        isLocked = false
+        lockedSince = nil
         message = nil
+        isError = false
     }
 }
 
-/// Floating pill at the bottom of the screen with a live waveform.
-/// It never takes focus or mouse clicks, so typing goes on in the app you're dictating into.
+/// Floating pill at the bottom of the screen: a small waveform while listening, a moving wave
+/// while transcribing, and short notices. It never takes focus or mouse clicks, so typing goes on
+/// in the app you're dictating into.
 @MainActor
 final class RecordingOverlay {
     let model = OverlayModel()
 
     // The panel is fixed and transparent; the pill sits at its bottom.
-    private static let size = NSSize(width: 320, height: 80)
+    private static let size = NSSize(width: 420, height: 90)
     private static let bottomMargin: CGFloat = 28
 
     private static let messageDuration: TimeInterval = 2.5
+    private static let errorDuration: TimeInterval = 4
 
     private let panel: NSPanel
     private var timer: Timer?
@@ -74,22 +89,25 @@ final class RecordingOverlay {
         model.isTranscribing = true
     }
 
-    func showLocked() {
-        model.isLocked = true
+    func showLocked(hint: String) {
+        model.lockedSince = Date()
+        model.lockedHint = hint
     }
 
     /// Shows a notice for a moment, whether or not the overlay was already visible.
-    func flash(_ message: String) {
+    /// Errors always show, even with the indicator turned off: otherwise a failure looks like nothing happened.
+    func flash(_ message: String, isError: Bool = false) {
         timer?.invalidate()
         timer = nil
         model.reset()
         model.message = message
+        model.isError = isError
         placeOnActiveScreen()
         panel.orderFrontRegardless()
         cancelScheduledHide()
         let work = DispatchWorkItem { [weak self] in self?.hide() }
         hideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.messageDuration, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (isError ? Self.errorDuration : Self.messageDuration), execute: work)
     }
 
     func hide() {
@@ -97,6 +115,8 @@ final class RecordingOverlay {
         timer?.invalidate()
         timer = nil
         panel.orderOut(nil)
+        // Also stops the hands-free clock and the transcribing wave, which would keep redrawing while hidden.
+        model.reset()
     }
 
     private func cancelScheduledHide() {
@@ -117,49 +137,98 @@ private struct OverlayView: View {
 
     var body: some View {
         content
-            .padding(.horizontal, 18)
-            .padding(.vertical, 11)
-            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.black.opacity(0.85)))
-            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.12)))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.black.opacity(0.85)))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.12)))
             .animation(.easeOut(duration: 0.2), value: model.isTranscribing)
+            .animation(.easeOut(duration: 0.2), value: model.lockedSince)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
     @ViewBuilder
     private var content: some View {
         if let message = model.message {
-            Text(message)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white)
-                .frame(height: 26)
-        } else {
-            HStack(spacing: 10) {
-                if model.isLocked {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.8))
+            HStack(spacing: 8) {
+                if model.isError {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
                 }
-                Waveform(levels: model.levels)
+                Text(message)
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
             }
-            .opacity(model.isTranscribing ? 0.35 : 1)
+            .font(.system(size: 13, weight: .medium))
+            .frame(minHeight: 22)
+        } else if let since = model.lockedSince {
+            VStack(spacing: 5) {
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.8))
+                    waveform
+                    // Hands-free can run long: show for how long it's been listening.
+                    Text(timerInterval: since...Date.distantFuture, countsDown: false)
+                        .font(.system(size: 12, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.8))
+                        .frame(width: 36, alignment: .trailing)
+                }
+                if !model.isTranscribing {
+                    Text(model.lockedHint)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+            }
+        } else {
+            waveform
+        }
+    }
+
+    @ViewBuilder
+    private var waveform: some View {
+        if model.isTranscribing {
+            ProcessingWave()
+        } else {
+            Waveform(bars: model.bars)
         }
     }
 }
 
-private struct Waveform: View {
-    let levels: [CGFloat]
+private enum Bars {
+    static let width: CGFloat = 4
+    static let spacing: CGFloat = 4
+    static let maxHeight: CGFloat = 22
+}
 
-    private static let height: CGFloat = 26
+/// Listening: bars that follow your voice, quiet dots in silence.
+private struct Waveform: View {
+    let bars: [CGFloat]
 
     var body: some View {
-        HStack(spacing: 3) {
-            ForEach(levels.indices, id: \.self) { i in
-                Capsule()
-                    .frame(width: 3, height: max(3, levels[i] * Self.height))
+        HStack(spacing: Bars.spacing) {
+            ForEach(bars.indices, id: \.self) { i in
+                Capsule().frame(width: Bars.width, height: max(Bars.width, bars[i] * Bars.maxHeight))
             }
         }
-        .frame(height: Self.height)
+        .frame(height: Bars.maxHeight)
         .foregroundStyle(.white)
-        .animation(.linear(duration: 1.0 / 30), value: levels)
+        .animation(.linear(duration: 1.0 / 30), value: bars)
+    }
+}
+
+/// Transcribing: a wave running through the bars, so it reads as "working", not "stuck".
+private struct ProcessingWave: View {
+    var body: some View {
+        TimelineView(.animation) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            HStack(spacing: Bars.spacing) {
+                ForEach(0..<OverlayModel.barCount, id: \.self) { i in
+                    let phase = (sin(time * 7 - Double(i) * 0.7) + 1) / 2
+                    Capsule().frame(width: Bars.width, height: Bars.width + CGFloat(phase) * Bars.maxHeight * 0.5)
+                }
+            }
+            .frame(height: Bars.maxHeight)
+            .foregroundStyle(.white.opacity(0.6))
+        }
     }
 }

@@ -24,10 +24,19 @@ depend on Homebrew.
 ## Usage
 
 - Hold **Right ⌘** to record, release to transcribe and paste.
-- Double-tap the key to dictate hands-free; tap it again to finish, or press Esc to cancel.
+- Double-tap the key to dictate hands-free; tap it again to finish, or press Esc to cancel. It stops by itself after a minute of silence.
+- Long dictations are transcribed in parts while you speak, so the text arrives about a second after you finish.
 - Taps shorter than 0.3 s are ignored, and pressing another key while holding the dictation key cancels (so ⌘ shortcuts still work).
 - Your clipboard is restored after pasting.
 - If there is nowhere to paste, the text is left on the clipboard and Utter tells you to press ⌘V.
+
+## Diagnostics
+
+Utter logs timings, detected languages and outcomes (never the dictated text):
+
+```bash
+/usr/bin/log show --last 1h --predicate 'subsystem == "com.vcamaral.utter"'
+```
 
 ## Layout
 
@@ -36,6 +45,7 @@ depend on Homebrew.
 | `PushToTalk.swift` | Global hold/double-tap detection of the dictation key |
 | `AudioRecorder.swift` | Microphone capture, resampled to 16 kHz mono |
 | `Transcriber.swift` | Language detection and Whisper transcription (whisper.cpp) |
+| `LiveTranscription.swift` | Transcribes long dictations in parts while recording |
 | `ModelDownloader.swift` | One-time model download, checked against its SHA-256 |
 | `TextInjector.swift` | Paste into the frontmost app, restore the clipboard |
 | `MediaPause.swift` | Pause music while dictating, resume after |

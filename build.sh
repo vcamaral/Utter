@@ -26,9 +26,11 @@ echo "OK: $APP"
 
 if [[ "${1:-}" == "install" ]]; then
     pkill -x Utter || true
+    while pgrep -x Utter >/dev/null; do sleep 0.2; done
     mkdir -p ~/Applications
     rm -rf ~/Applications/Utter.app
     cp -R "$APP" ~/Applications/
-    open ~/Applications/Utter.app
+    # LaunchServices sometimes refuses to open a bundle it hasn't registered yet (error -600): retry.
+    for _ in 1 2 3 4 5; do open ~/Applications/Utter.app 2>/dev/null && break; sleep 1; done
     echo "Installed to ~/Applications/Utter.app"
 fi

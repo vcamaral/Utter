@@ -70,10 +70,14 @@ final class TriggerCapturePanel {
         }
         guard flags & trigger.flagMask != 0 else { return }
         model.captured = trigger
-        model.message = "Hold \(trigger.name) to dictate"
         model.isError = false
         onCapture(trigger)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+        // fn opens the emoji picker or Apple's dictation by default: say how to turn that off, and leave time to read it.
+        let isFn = trigger.keyCode == 63
+        model.message = isFn
+            ? "Hold fn to dictate. In System Settings → Keyboard, set “Press 🌐 key to” to “Do Nothing”, so macOS doesn't react to it too."
+            : "Hold \(trigger.name) to dictate"
+        DispatchQueue.main.asyncAfter(deadline: .now() + (isFn ? 6 : 0.8)) { [weak self] in
             self?.window?.close()
         }
     }

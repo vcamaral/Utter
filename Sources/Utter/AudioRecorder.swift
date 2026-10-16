@@ -8,7 +8,7 @@ enum RecorderError: LocalizedError {
 
 /// Captures the microphone as 16 kHz mono samples, the format Whisper expects.
 /// The engine only runs while recording, so the mic indicator is off the rest of the time.
-final class AudioRecorder {
+final class AudioRecorder: GrowingAudio {
     private let engine = AVAudioEngine()
     private let lock = NSLock()
     private var samples: [Float] = []
@@ -24,6 +24,14 @@ final class AudioRecorder {
 
     /// RMS of the most recent audio buffer, for the waveform.
     var level: Float { lock.withLock { lastLevel } }
+
+    /// Samples captured so far in this recording.
+    var sampleCount: Int { lock.withLock { samples.count } }
+
+    /// A copy of what was captured from `index` on, while still recording (for transcribing as you speak).
+    func samples(from index: Int) -> [Float] {
+        lock.withLock { index < samples.count ? Array(samples[index...]) : [] }
+    }
 
     /// Sets up the input unit ahead of time, the slow part of the first start, so the microphone
     /// switches on sooner when the key is pressed. Doesn't switch the microphone on by itself.

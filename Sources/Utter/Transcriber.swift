@@ -15,6 +15,13 @@ enum TranscriberError: LocalizedError {
     }
 }
 
+/// What a pass over some audio produced.
+struct Transcript {
+    let text: String
+    /// The language Whisper used, so the next part of the same dictation can skip detecting it.
+    let language: String?
+}
+
 /// Runs Whisper locally through whisper.cpp, on the GPU (Metal).
 /// whisper.cpp calls block for a while, so they run on a dedicated queue, one at a time.
 final class Transcriber: @unchecked Sendable {
@@ -37,9 +44,15 @@ final class Transcriber: @unchecked Sendable {
     private static let plausibleLanguage: Float = 0.2
     private static let knownLanguagesKey = "knownLanguages"
 
+    /// The models leave memory after this long without dictating (~750 MB back), and come back when
+    /// the key is pressed, while you speak.
+    private static let idleUnloadDelay: TimeInterval = 15 * 60
+
     private let queue = DispatchQueue(label: "utter.whisper", qos: .userInitiated)
+    // Everything below is only touched on `queue`.
     private var context: OpaquePointer?
     private var detector: OpaquePointer?
+    private var unloadWork: DispatchWorkItem?
 
     /// Downloads the models if needed (~600 MB, once), then loads them, which takes a second or two.
     func prepare(onDownloadProgress: @escaping @Sendable (Double) -> Void,
@@ -48,39 +61,86 @@ final class Transcriber: @unchecked Sendable {
         onLoading()
         try await run {
             whisper_log_set({ _, _, _ in }, nil)   // whisper.cpp logs a lot to stderr
-            var params = whisper_context_default_params()
-            params.use_gpu = true
-            params.flash_attn = true
-            guard let context = whisper_init_from_file_with_params(ModelFile.transcription.path, params),
-                  let detector = whisper_init_from_file_with_params(ModelFile.languageDetection.path, params)
-            else { throw TranscriberError.loadFailed }
-            self.context = context
-            self.detector = detector
-            // One pass over a second of silence sets up the GPU pipelines, so the first real dictation is quick.
-            _ = try? self.decode([Float](repeating: 0, count: Self.sampleRate), language: "en", with: context)
+            try self.load()
+            self.scheduleUnload()
+        }
+    }
+
+    /// Starts loading the models if they were unloaded, without waiting. Called when the key goes down,
+    /// so loading overlaps with you speaking; a transcription queued after it waits for it to finish.
+    func preload() {
+        queue.async {
+            self.unloadWork?.cancel()
+            try? self.load()
+            self.scheduleUnload()
         }
     }
 
     /// Frees the models. whisper.cpp aborts if the process exits while they're still loaded on the GPU.
     func shutdown() {
         queue.sync {
-            if let context { whisper_free(context) }
-            if let detector { whisper_free(detector) }
-            context = nil
-            detector = nil
+            unloadWork?.cancel()
+            unload()
         }
+    }
+
+    // Runs on `queue`. Does nothing if already loaded.
+    private func load() throws {
+        guard context == nil || detector == nil else { return }
+        let clock = ContinuousClock()
+        let start = clock.now
+        var params = whisper_context_default_params()
+        params.use_gpu = true
+        params.flash_attn = true
+        context = context ?? whisper_init_from_file_with_params(ModelFile.transcription.path, params)
+        detector = detector ?? whisper_init_from_file_with_params(ModelFile.languageDetection.path, params)
+        guard let context, detector != nil else {
+            unload()   // don't keep half a pair in memory
+            throw TranscriberError.loadFailed
+        }
+        // One pass over a second of silence sets up the GPU pipelines, so the first real dictation is quick.
+        _ = try? decode([Float](repeating: 0, count: Self.sampleRate), language: "en", prompt: nil, detectSpeech: false, with: context)
+        logger.notice("models loaded in \(String(describing: clock.now - start), privacy: .public)")
+    }
+
+    // Runs on `queue`.
+    private func unload() {
+        guard context != nil || detector != nil else { return }
+        if let context { whisper_free(context) }
+        if let detector { whisper_free(detector) }
+        context = nil
+        detector = nil
+        logger.notice("models unloaded")
+    }
+
+    // Runs on `queue`.
+    private func scheduleUnload() {
+        unloadWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.unload() }
+        unloadWork = work
+        queue.asyncAfter(deadline: .now() + Self.idleUnloadDelay, execute: work)
     }
 
     /// Returns the transcribed text, or an empty string when there is nothing worth pasting.
     /// The language is detected on every dictation, so you can switch freely between them.
-    func transcribe(_ samples: [Float]) async throws -> String {
+    /// - Parameters:
+    ///   - language: Whisper language code; `nil` detects it.
+    ///   - prompt: Text that came right before this audio, so punctuation and capitals carry on naturally.
+    func transcribe(_ samples: [Float], language: String? = nil, prompt: String? = nil) async throws -> Transcript {
         guard Double(samples.count) / Double(Self.sampleRate) >= Self.minimumDuration,
               Self.loudestWindowRMS(samples) >= Self.silenceRMS
-        else { return "" }
+        else { return Transcript(text: "", language: language) }
 
         return try await run {
+            try self.load()   // in case they were unloaded and nothing preloaded them
+            defer { self.scheduleUnload() }
             guard let context = self.context, let detector = self.detector else { throw TranscriberError.notReady }
-            return try self.decode(samples, language: self.detectLanguage(samples, with: detector), with: context)
+            let clock = ContinuousClock()
+            let start = clock.now
+            let chosen = language ?? self.detectLanguage(samples, with: detector)
+            let (text, used) = try self.decode(samples, language: chosen, prompt: prompt, detectSpeech: true, with: context)
+            logger.notice("transcribed \(Double(samples.count) / Double(Self.sampleRate), format: .fixed(precision: 1))s in \(String(describing: clock.now - start), privacy: .public), language \(used ?? "?", privacy: .public)\(chosen == nil ? " (full detection)" : "", privacy: .public)")
+            return Transcript(text: text, language: used)
         }
     }
 
@@ -115,25 +175,44 @@ final class Transcriber: @unchecked Sendable {
     }
 
     // Runs on `queue`.
-    private func decode(_ samples: [Float], language: String?, with context: OpaquePointer) throws -> String {
+    /// - Parameter detectSpeech: Transcribe only the parts with a voice in them. Off for the warm-up,
+    ///   which needs the full pipeline to run over silence.
+    private func decode(_ samples: [Float], language: String?, prompt: String?, detectSpeech: Bool,
+                        with context: OpaquePointer) throws -> (text: String, language: String?) {
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
         params.n_threads = Int32(min(8, max(1, ProcessInfo.processInfo.activeProcessorCount - 2)))
         params.no_context = true
-        params.no_timestamps = true
+        // Timestamps let Whisper split audio longer than 30 s at the end of a sentence; without them it
+        // cuts blindly at 30 s, mid-sentence, and garbles the words around the cut. Same speed.
+        params.no_timestamps = false
         params.suppress_blank = true
         params.suppress_nst = true
         params.print_progress = false
         params.print_realtime = false
         params.print_special = false
         params.print_timestamps = false
+        // Voice activity detection: silence, breathing and background noise never reach Whisper, which
+        // would otherwise "hear" a "Thank you." in them. Tuned for dictation: short words count, pauses
+        // of half a second split phrases, and a little padding keeps the edges of words.
+        params.vad = detectSpeech
+        params.vad_params.min_speech_duration_ms = 100
+        params.vad_params.min_silence_duration_ms = 500
+        params.vad_params.speech_pad_ms = 200
 
         let status = (language ?? "auto").withCString { language in
-            params.language = language
-            return samples.withUnsafeBufferPointer { buffer in
-                whisper_full(context, params, buffer.baseAddress, Int32(buffer.count))
+            (prompt ?? "").withCString { prompt in
+                ModelFile.voiceDetection.path.withCString { vadModel in
+                    params.language = language
+                    params.initial_prompt = prompt
+                    params.vad_model_path = vadModel
+                    return samples.withUnsafeBufferPointer { buffer in
+                        whisper_full(context, params, buffer.baseAddress, Int32(buffer.count))
+                    }
+                }
             }
         }
         guard status == 0 else { throw TranscriberError.transcriptionFailed }
+        let usedLanguage = language ?? String(cString: whisper_lang_str(whisper_full_lang_id(context)))
 
         let endOfText = whisper_token_eot(context)
         var kept: [String] = []
@@ -149,7 +228,8 @@ final class Transcriber: @unchecked Sendable {
             let isCredits = Self.subtitleCredits.contains { text.lowercased().contains($0) }
             if !isSilence, !isCredits { kept.append(text) }
         }
-        return kept.joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let text = kept.joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return (text, usedLanguage)
     }
 
     /// RMS of the loudest 100 ms. The whole recording's RMS would call a long hands-free dictation

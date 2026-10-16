@@ -101,7 +101,7 @@ private struct SetupView: View {
             footer
         }
         .padding(.horizontal, 28)
-        .padding(.top, 36)   // clears the transparent title bar
+        .padding(.top, 8)   // the transparent title bar already adds its own height
         .padding(.bottom, 24)
         .frame(width: 500)
         .animation(.easeOut(duration: 0.2), value: model.isComplete)

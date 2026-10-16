@@ -18,6 +18,7 @@ struct ModelFile: Sendable {
     let name: String
     let size: Int64
     let sha256: String
+    var repository = "ggerganov/whisper.cpp"
 
     /// Whisper large-v3 turbo, 5-bit quantized: near full accuracy at a third of the size. Does the transcription.
     static let transcription = ModelFile(
@@ -28,14 +29,20 @@ struct ModelFile: Sendable {
         name: "ggml-tiny-q5_1.bin", size: 32_152_673,
         sha256: "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7")
 
-    static let all = [transcription, languageDetection]
+    /// Silero voice activity detection: tells speech from silence and noise, so they never turn into text.
+    static let voiceDetection = ModelFile(
+        name: "ggml-silero-v6.2.0.bin", size: 885_098,
+        sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+        repository: "ggml-org/whisper-vad")
+
+    static let all = [transcription, languageDetection, voiceDetection]
 
     static var folder: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Utter/models", isDirectory: true)
     }
 
-    var url: URL { URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(name)")! }
+    var url: URL { URL(string: "https://huggingface.co/\(repository)/resolve/main/\(name)")! }
     var path: String { Self.folder.appendingPathComponent(name).path }
 
     /// A complete file is only ever moved into place after its checksum matched, so the size is enough here.

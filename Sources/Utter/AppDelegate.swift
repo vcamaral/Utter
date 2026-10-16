@@ -22,16 +22,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let setupItem = NSMenuItem(title: "Finish Setup…", action: #selector(showSetup), keyEquivalent: "")
     private let triggerItem = NSMenuItem(title: "", action: #selector(changeTrigger), keyEquivalent: "")
-    private let fnHintItem = NSMenuItem(title: "Set “Press 🌐 key to” to “Do Nothing” in Keyboard settings", action: nil, keyEquivalent: "")
     private let pauseMediaItem = NSMenuItem(title: "Pause Media While Dictating", action: #selector(togglePauseMedia), keyEquivalent: "")
     private let soundsItem = NSMenuItem(title: "Play Sounds", action: #selector(toggleSounds), keyEquivalent: "")
     private let indicatorItem = NSMenuItem(title: "Show Recording Indicator", action: #selector(toggleIndicator), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
+    private let howToItem = NSMenuItem(title: "How to Use…", action: #selector(showSetup), keyEquivalent: "")
+    private let aboutItem = NSMenuItem(title: "About Utter", action: #selector(showAbout), keyEquivalent: "")
     private var permissionTimer: Timer?
     /// Whether System Settings was already open when we sent you there, so we only close it if we opened it.
     private var settingsWasOpen = true
     private var isModelLoaded = false
     private var isModelLoading = false
+    private var live: LiveTranscription?
+    /// Why the current press can't record, shown once the press is confirmed.
+    private var startProblem: String?
+    private var handsFreeWatchdog: Timer?
+    private var lastVoiceAt = Date()
 
     private var state: State = .loading("Starting…") { didSet { render() } }
     private var hasAccessibility = TextInjector.isTrusted { didSet { render() } }
@@ -55,7 +61,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         triggerItem.title = "Dictation Key: \(settings.trigger.name)…"
-        fnHintItem.isHidden = settings.trigger.keyCode != 63
         pauseMediaItem.state = settings.pauseMedia ? .on : .off
         soundsItem.state = settings.playSounds ? .on : .off
         indicatorItem.state = settings.showIndicator ? .on : .off
@@ -97,11 +102,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(setupItem)
         menu.addItem(.separator())
 
-        triggerItem.target = self
-        menu.addItem(triggerItem)
-        fnHintItem.isEnabled = false
-        menu.addItem(fnHintItem)
-        for item in [pauseMediaItem, soundsItem, indicatorItem, loginItem] {
+        menu.addItem(.sectionHeader(title: "Dictation"))
+        for item in [triggerItem, pauseMediaItem, soundsItem, indicatorItem] {
+            item.target = self
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "General"))
+        for item in [loginItem, howToItem, aboutItem] {
             item.target = self
             menu.addItem(item)
         }
@@ -238,26 +246,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Dictation
 
+    /// Hands-free stops by itself after this long without speech, or this long in total.
+    private static let handsFreeSilenceLimit: TimeInterval = 60
+    private static let handsFreeMaxDuration: TimeInterval = 15 * 60
+    /// Microphone loudness (RMS) that counts as someone speaking, about -40 dBFS.
+    private static let voiceRMS: Float = 0.01
+
     /// The key went down. Recording starts right away so no word is lost; all feedback waits for `commitRecording`.
     private func startRecording() {
-        // A failed dictation shouldn't block the next one, only a missing model should.
+        // A failed dictation shouldn't block the next one.
         switch state {
-        case .ready, .failed: guard isModelLoaded else { return }
+        case .ready, .failed, .loading: break
         default: return
         }
-        guard AudioRecorder.isAuthorized else {
-            state = .failed("Allow Microphone access in System Settings → Privacy & Security")
+        // Problems are only reported once the press is confirmed, so ⌘-shortcuts don't trigger error popups.
+        guard isModelLoaded else {
+            startProblem = isModelLoading ? "Voice recognition is still getting ready" : "Voice recognition isn't ready. Open Utter's menu to retry."
             return
         }
+        guard AudioRecorder.isAuthorized else {
+            startProblem = "Utter can't use the microphone. Allow it in System Settings → Privacy & Security."
+            return
+        }
+        transcriber.preload()   // no-op unless the models were unloaded while idle
         do {
             try recorder.start()
             state = .recording(handsFree: false)
+            live = LiveTranscription(audio: recorder, transcriber: transcriber)
+            live?.start()
         } catch {
-            state = .failed("Couldn't start recording: \(error.localizedDescription)")
+            logger.error("recording failed to start: \(error.localizedDescription, privacy: .public)")
+            startProblem = "Couldn't start recording: \(error.localizedDescription)"
         }
     }
 
     private func commitRecording() {
+        if let startProblem {
+            overlay.flash(startProblem, isError: true)
+            return
+        }
         guard case .recording = state else { return }
         if settings.pauseMedia { mediaPause.recordingStarted() }
         if settings.playSounds { Sounds.playStart() }
@@ -269,38 +296,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func lockRecording() {
         guard case .recording = state else { return }
         state = .recording(handsFree: true)
-        overlay.showLocked()
+        overlay.showLocked(hint: "tap \(settings.trigger.name) to finish · esc to cancel")
+        startHandsFreeWatchdog()
     }
 
-    private func finishRecording() {
-        guard case .recording = state else { return }
+    /// - Parameter notice: Shown after pasting, e.g. why hands-free stopped by itself.
+    private func finishRecording(notice: String? = nil) {
+        startProblem = nil
+        guard case .recording(let handsFree) = state else { return }
+        stopHandsFreeWatchdog()
         let samples = recorder.stop()
         mediaPause.recordingEnded()
         if settings.playSounds { Sounds.playStop() }
         state = .transcribing
         overlay.showTranscribing()
+        let live = self.live
+        self.live = nil
+        let clock = ContinuousClock()
+        let start = clock.now
         Task {
             do {
-                let text = try await transcriber.transcribe(samples)
-                if !text.isEmpty, TextInjector.insert(text) == .copied {
+                let text = try await live?.finish(with: samples) ?? ""
+                let outcome = text.isEmpty ? nil : TextInjector.insert(text)
+                logger.notice("dictation of \(Double(samples.count) / 16_000, format: .fixed(precision: 1))s\(handsFree ? " (hands-free)" : "", privacy: .public): \(outcome.map { "\($0)" } ?? "nothing to paste", privacy: .public), \(String(describing: clock.now - start), privacy: .public) after release")
+                if outcome == .copied {
                     overlay.flash("Copied — press ⌘V to paste")
+                } else if text.isEmpty {
+                    // Silence or noise: say so, or it looks like Utter didn't react.
+                    overlay.flash(notice ?? "Didn't catch that")
+                } else if let notice {
+                    overlay.flash(notice)
                 } else {
                     overlay.hide()
                 }
                 state = .ready
             } catch {
-                overlay.hide()
+                logger.error("transcription failed: \(error.localizedDescription, privacy: .public)")
+                overlay.flash("Couldn't transcribe: \(error.localizedDescription)", isError: true)
                 state = .failed("Transcription failed: \(error.localizedDescription)")
             }
         }
     }
 
     private func cancelRecording() {
+        startProblem = nil
         guard case .recording = state else { return }
+        stopHandsFreeWatchdog()
+        live?.cancel()
+        live = nil
         _ = recorder.stop()
         mediaPause.recordingEnded()
         overlay.hide()
         state = .ready
+    }
+
+    /// A forgotten hands-free dictation would keep the microphone on forever: stop it after a minute
+    /// without speech, or after a long while in any case.
+    private func startHandsFreeWatchdog() {
+        let startedAt = Date()
+        lastVoiceAt = startedAt
+        handsFreeWatchdog = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.recorder.level >= Self.voiceRMS { self.lastVoiceAt = Date() }
+                let silent = Date().timeIntervalSince(self.lastVoiceAt) >= Self.handsFreeSilenceLimit
+                let tooLong = Date().timeIntervalSince(startedAt) >= Self.handsFreeMaxDuration
+                guard silent || tooLong else { return }
+                logger.notice("hands-free stopped by itself: \(silent ? "silence" : "maximum duration", privacy: .public)")
+                self.pushToTalk.reset()
+                self.finishRecording(notice: silent ? "Stopped after a minute of silence" : "Stopped after 15 minutes")
+            }
+        }
+    }
+
+    private func stopHandsFreeWatchdog() {
+        handsFreeWatchdog?.invalidate()
+        handsFreeWatchdog = nil
     }
 
     // MARK: - Menu actions
@@ -308,6 +379,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showSetup() {
         setup.model.triggerName = settings.trigger.name
         setup.show()
+    }
+
+    @objc private func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .credits: NSAttributedString(string: "Local voice dictation. Powered by Whisper and whisper.cpp; your voice never leaves this Mac.",
+                                         attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]),
+        ])
     }
 
     @objc private func changeTrigger() {
@@ -335,18 +414,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func render() {
         let trigger = settings.trigger.name
-        let (symbol, text): (String, String) = switch state {
-        case .failed(let message): ("exclamationmark.triangle", message)
-        case _ where !hasAccessibility: ("lock", "Allow Utter in System Settings → Privacy & Security → \(TextInjector.permissionName)")
-        case .loading(let message): ("arrow.down.circle", message)
-        case .ready: ("waveform", "Ready — hold \(trigger) to dictate, double-tap for hands-free")
-        case .recording(handsFree: false): ("waveform", "Listening…")
-        case .recording(handsFree: true): ("waveform", "Hands-free — tap \(trigger) to finish, Esc to cancel")
-        case .transcribing: ("ellipsis", "Transcribing…")
+        let (symbol, text): (NSImage?, String) = switch state {
+        case .failed(let message): (systemIcon("exclamationmark.triangle"), message)
+        case _ where !hasAccessibility: (systemIcon("lock"), "Allow Utter in System Settings → Privacy & Security → \(TextInjector.permissionName)")
+        case .loading(let message): (systemIcon("arrow.down.circle"), message)
+        case .ready: (MenuBarIcon.normal, "Ready · hold \(trigger) to dictate")
+        case .recording(handsFree: false): (MenuBarIcon.normal, "Listening…")
+        case .recording(handsFree: true): (MenuBarIcon.normal, "Hands-free · tap \(trigger) to finish")
+        case .transcribing: (MenuBarIcon.dimmed, "Transcribing…")
         }
         guard let button = statusItem?.button else { return }
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Utter")
+        button.image = symbol
         button.contentTintColor = if case .recording = state { .systemRed } else { nil }
         statusLine.title = text
+    }
+
+    private func systemIcon(_ name: String) -> NSImage? {
+        NSImage(systemSymbolName: name, accessibilityDescription: "Utter")
     }
 }

@@ -60,6 +60,12 @@ final class PushToTalk {
         }
     }
 
+    /// Forgets the current press, e.g. when the app ended a hands-free dictation by itself.
+    func reset() {
+        cancelPending()
+        phase = .idle
+    }
+
     // MARK: - Private
 
     private func handle(_ event: NSEvent) {
