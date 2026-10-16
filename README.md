@@ -16,6 +16,12 @@ On first launch a setup window walks you through the **Microphone** and **Access
 needed to see the dictation key in other apps and to paste) while the model downloads. Once downloaded, it loads in a
 couple of seconds. If you open the app straight from the DMG, it offers to move itself into Applications.
 
+Or with Homebrew, which also skips the first-launch step below:
+
+```bash
+brew install --cask vcamaral/tap/utter
+```
+
 ### First launch
 
 Utter isn't notarized by Apple yet, so macOS blocks it the first time. To allow it:
@@ -57,7 +63,9 @@ in the background, and restarts into the new version only after 10 minutes witho
 you. **Check for Updates…** does it right away. It skips updating while the clone has uncommitted changes. Keep the
 clone where you installed from; the log of the last update is in `~/Library/Logs/Utter-update.log`.
 
-To package a release: `./scripts/make-dmg.sh` builds `build/Utter.dmg`. The DMG background
+To package the DMG: `./scripts/make-dmg.sh` builds `build/Utter.dmg`. To publish a release, bump
+`CFBundleShortVersionString` in `Info.plist`, commit, and run `./scripts/release.sh [notes.md]`: it creates the GitHub
+release and updates the [Homebrew cask](https://github.com/vcamaral/homebrew-tap). The DMG background
 (`scripts/make-dmg-background.swift`) is drawn in code; the app icon comes from `scripts/make-icon.swift`.
 
 ## Diagnostics
