@@ -28,8 +28,8 @@ final class Updater {
     /// A remote commit whose update failed: not retried until something newer lands.
     private var failedCommit: String?
 
-    private static let latestReleaseAPI = URL(string: "https://api.github.com/repos/vcamaral/utter/releases/latest")!
-    private static let downloadURL = URL(string: "https://github.com/vcamaral/utter/releases/latest/download/Utter.dmg")!
+    private static let latestReleaseAPI = URL(string: "https://api.github.com/repos/vcamaral/Utter/releases/latest")!
+    private static let downloadURL = URL(string: "https://github.com/vcamaral/Utter/releases/latest/download/Utter.dmg")!
 
     static var currentCommit: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev"

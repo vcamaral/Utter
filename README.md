@@ -8,7 +8,7 @@ from Hugging Face (~600 MB), plus update checks when you ask for them. The langu
 
 ## Install
 
-1. **[⬇ Download Utter.dmg](https://github.com/vcamaral/utter/releases/latest/download/Utter.dmg)** (macOS 14 or later, Apple silicon).
+1. **[⬇ Download Utter.dmg](https://github.com/vcamaral/Utter/releases/latest/download/Utter.dmg)** (macOS 14 or later, Apple silicon).
 2. Open the DMG and drag **Utter** into **Applications**.
 3. Open Utter from Applications or Spotlight.
 
@@ -51,7 +51,7 @@ you ask.
 Requires Apple's Command Line Tools and `cmake` (`brew install cmake`). Xcode is not needed.
 
 ```bash
-gh repo clone vcamaral/utter ~/Code/utter
+gh repo clone vcamaral/Utter ~/Code/utter
 ~/Code/utter/install.sh
 ```
 

@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 APP=Utter
 CASK=utter
-REPO=vcamaral/utter
+REPO=vcamaral/Utter
 VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Info.plist)
 TAG="v$VERSION"
 
