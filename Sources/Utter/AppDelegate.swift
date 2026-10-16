@@ -48,6 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hasAccessibility = TextInjector.isTrusted { didSet { render() } }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before asking for permissions: this may quit and relaunch from /Applications.
+        MoveToApplications.offerIfNeeded()
         setUpMainMenu()
         setUpStatusItem()
         setUpPushToTalk()
@@ -115,7 +117,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
         menu.addItem(.sectionHeader(title: "General"))
-        updateItem.isHidden = !updater.isAvailable
         for item in [loginItem, howToItem, updateItem, aboutItem] {
             item.target = self
             menu.addItem(item)

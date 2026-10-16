@@ -3,6 +3,8 @@ import AppKit
 /// Keeps Utter up to date from the git clone it was built from (build.sh stores the clone's path in
 /// Info.plist), with no questions asked: when origin has new commits, it pulls and builds in the
 /// background, then swaps the app only while you're idle, so a dictation is never cut off.
+/// Copies installed from the DMG have no clone: Check for Updates… looks at GitHub Releases instead,
+/// only when you ask, so Utter never goes online on its own.
 @MainActor
 final class Updater {
     private static let checkInterval: TimeInterval = 2 * 60 * 60
@@ -26,15 +28,19 @@ final class Updater {
     /// A remote commit whose update failed: not retried until something newer lands.
     private var failedCommit: String?
 
-    /// False for builds that don't come from a git clone.
-    var isAvailable: Bool { sourceDir != nil }
+    private static let latestReleaseAPI = URL(string: "https://api.github.com/repos/vcamaral/utter/releases/latest")!
+    private static let downloadURL = URL(string: "https://github.com/vcamaral/utter/releases/latest/download/Utter.dmg")!
 
     static var currentCommit: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev"
     }
 
+    static var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
+
     func start() {
-        guard isAvailable else { return }
+        guard sourceDir != nil else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.firstCheckDelay) { [weak self] in
             Task { await self?.checkAndUpdate(userInitiated: false) }
         }
@@ -45,7 +51,13 @@ final class Updater {
 
     /// From the menu: checks now and, if there's an update, installs it right away.
     func checkNow() {
-        Task { await checkAndUpdate(userInitiated: true) }
+        Task {
+            if sourceDir == nil {
+                await checkLatestRelease()
+            } else {
+                await checkAndUpdate(userInitiated: true)
+            }
+        }
     }
 
     // MARK: - Private
@@ -91,6 +103,32 @@ final class Updater {
             install(in: sourceDir)
         } else {
             waitForIdle(in: sourceDir)
+        }
+    }
+
+    /// DMG installs: compares this version with the latest release and offers to download it.
+    private func checkLatestRelease() async {
+        struct Release: Decodable { let tag_name: String }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: Self.latestReleaseAPI)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            let latest = String(try JSONDecoder().decode(Release.self, from: data).tag_name.trimmingPrefix("v"))
+            guard latest.compare(Self.currentVersion, options: .numeric) == .orderedDescending else {
+                showAlert("Utter is up to date.", details: "Version \(Self.currentVersion)")
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "Utter \(latest) is available."
+            alert.informativeText = "You have version \(Self.currentVersion). Quit Utter, open the downloaded DMG and drag Utter into Applications, replacing the old one. Your settings and permissions are kept."
+            alert.addButton(withTitle: "Download")
+            alert.addButton(withTitle: "Later")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(Self.downloadURL)
+            }
+        } catch {
+            logger.error("release check failed: \(error.localizedDescription, privacy: .public)")
+            showAlert("Couldn't check for updates.", details: error.localizedDescription)
         }
     }
 

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Usage: ./build.sh          -> builds build/Utter.app
 #        ./build.sh install  -> builds, installs to ~/Applications and launches
+#        ./build.sh release  -> builds build/Utter.app for distribution (scripts/make-dmg.sh), not tied to this clone
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -13,8 +14,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Utter "$APP/Contents/MacOS/"
 cp Info.plist "$APP/Contents/"
-# Lets the app update itself from this clone (git pull + rebuild), and shows the commit in About.
-/usr/libexec/PlistBuddy -c "Add :UtterSourceDir string $PWD" "$APP/Contents/Info.plist"
+# Lets the app update itself from this clone (git pull + rebuild). Release builds check GitHub Releases instead.
+if [[ "${1:-}" != "release" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :UtterSourceDir string $PWD" "$APP/Contents/Info.plist"
+fi
+# The commit, shown in About.
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(git rev-parse --short HEAD 2>/dev/null || echo dev)" "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 
