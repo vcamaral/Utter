@@ -17,6 +17,10 @@ final class SetupModel: ObservableObject {
     @Published var triggerName = ""
     /// Applied when you press Done.
     @Published var launchAtLogin = true
+    // Here rather than @State in the view: @State is a macro in recent SDKs, and the Command Line Tools
+    // don't ship the SwiftUI macro plugin.
+    @Published var tryText = ""
+    @Published var triedIt = false
 
     var onAllowMicrophone: () -> Void = {}
     var onAllowAccessibility: () -> Void = {}
@@ -63,8 +67,6 @@ final class SetupWindow {
 
 private struct SetupView: View {
     @ObservedObject var model: SetupModel
-    @State private var tryText = ""
-    @State private var triedIt = false
 
     private static let downloadMB = Int(ModelFile.all.reduce(0) { $0 + $1.size } / 1_000_000)
 
@@ -105,7 +107,7 @@ private struct SetupView: View {
         .padding(.bottom, 24)
         .frame(width: 500)
         .animation(.easeOut(duration: 0.2), value: model.isComplete)
-        .animation(.easeOut(duration: 0.2), value: triedIt)
+        .animation(.easeOut(duration: 0.2), value: model.triedIt)
     }
 
     // MARK: - Sections
@@ -149,18 +151,18 @@ private struct SetupView: View {
             HStack {
                 Text("Try it: click the box below, then hold \(model.triggerName) and speak.")
                 Spacer()
-                if triedIt {
+                if model.triedIt {
                     Label("It works!", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .transition(.opacity)
                 }
             }
             .font(.callout)
-            TextField("Your words appear here", text: $tryText, axis: .vertical)
+            TextField("Your words appear here", text: $model.tryText, axis: .vertical)
                 .lineLimit(3...5)
                 .textFieldStyle(.roundedBorder)
-                .onChange(of: tryText) { _, text in
-                    if !text.isEmpty { triedIt = true }
+                .onChange(of: model.tryText) { _, text in
+                    if !text.isEmpty { model.triedIt = true }
                 }
         }
     }
