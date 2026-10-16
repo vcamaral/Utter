@@ -85,3 +85,7 @@ Utter logs timings, detected languages and outcomes (never the dictated text):
 | `AppDelegate.swift` | Menu bar UI and wiring |
 
 Models live in `~/Library/Application Support/Utter`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
