@@ -1,0 +1,6 @@
+// Bridge to whisper.cpp, built statically into vendor/whisper by scripts/build-whisper.sh.
+// Paths are relative to this file.
+module CWhisper [system] {
+    header "../../vendor/whisper/include/whisper.h"
+    export *
+}
