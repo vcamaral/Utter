@@ -13,6 +13,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Utter "$APP/Contents/MacOS/"
 cp Info.plist "$APP/Contents/"
+# Lets the app update itself from this clone (git pull + rebuild), and shows the commit in About.
+/usr/libexec/PlistBuddy -c "Add :UtterSourceDir string $PWD" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(git rev-parse --short HEAD 2>/dev/null || echo dev)" "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 
 # Sign with the stable local certificate so Accessibility and Microphone permissions survive rebuilds.

@@ -9,17 +9,24 @@ from Hugging Face (~600 MB). The language is detected on every dictation.
 ## Install
 
 ```bash
-cd ~/Code/utter
-./build.sh install
+gh repo clone vcamaral/utter ~/Code/utter
+~/Code/utter/install.sh
 ```
 
-On first launch a setup window walks you through the **Microphone** and **Accessibility** permissions (Accessibility
-is needed to see the dictation key in other apps and to paste) while the model downloads. Once downloaded, it loads in
-a couple of seconds.
+`install.sh` checks the prerequisites (Command Line Tools and `cmake`) and builds and opens the app. On first launch a
+setup window walks you through the **Microphone** and **Accessibility** permissions (Accessibility is needed to see the
+dictation key in other apps and to paste) while the model downloads. Once downloaded, it loads in a couple of seconds.
 
 Requires macOS 14+, Apple Silicon, Apple's Command Line Tools and `cmake` (`brew install cmake`). Xcode is not needed.
 The first build compiles whisper.cpp into `vendor/` (about 15 seconds); it's linked statically, so the app doesn't
 depend on Homebrew.
+
+## Updates
+
+Utter updates itself from the clone it was built from: it checks the git remote every couple of hours, pulls and builds
+in the background, and restarts into the new version only after 10 minutes without dictating, so it never interrupts
+you. **Check for Updates…** in the menu does it right away. It skips updating while the clone has uncommitted changes.
+Keep the clone where you installed from; the log of the last update is in `~/Library/Logs/Utter-update.log`.
 
 ## Usage
 
@@ -51,6 +58,7 @@ Utter logs timings, detected languages and outcomes (never the dictated text):
 | `MediaPause.swift` | Pause music while dictating, resume after |
 | `RecordingOverlay.swift` | Floating waveform while recording |
 | `SetupWindow.swift` | First-run permissions and download |
+| `Updater.swift` | Self-update from the git clone, applied while idle |
 | `AppDelegate.swift` | Menu bar UI and wiring |
 
 Models live in `~/Library/Application Support/Utter`.

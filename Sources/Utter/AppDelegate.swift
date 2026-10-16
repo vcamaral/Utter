@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let mediaPause = MediaPause()
     private let triggerCapture = TriggerCapturePanel()
     private let setup = SetupWindow()
+    private let updater = Updater()
     private lazy var pushToTalk = PushToTalk(settings: settings)
     private var statusItem: NSStatusItem!
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -28,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
     private let howToItem = NSMenuItem(title: "How to Use…", action: #selector(showSetup), keyEquivalent: "")
     private let aboutItem = NSMenuItem(title: "About Utter", action: #selector(showAbout), keyEquivalent: "")
+    private let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
     private var permissionTimer: Timer?
     /// Whether System Settings was already open when we sent you there, so we only close it if we opened it.
     private var settingsWasOpen = true
@@ -38,6 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var startProblem: String?
     private var handsFreeWatchdog: Timer?
     private var lastVoiceAt = Date()
+    /// Last time you dictated; updates only restart the app after a while without dictating.
+    private var lastDictationAt = Date()
+    private static let idleBeforeUpdate: TimeInterval = 10 * 60
 
     private var state: State = .loading("Starting…") { didSet { render() } }
     private var hasAccessibility = TextInjector.isTrusted { didSet { render() } }
@@ -52,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !setup.model.hasPermissions { startPermissionPolling() }
         loadModel()
         if !settings.setupCompleted || !setup.model.hasPermissions { showSetup() }
+        setUpUpdater()
         render()
     }
 
@@ -109,7 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
         menu.addItem(.sectionHeader(title: "General"))
-        for item in [loginItem, howToItem, aboutItem] {
+        updateItem.isHidden = !updater.isAvailable
+        for item in [loginItem, howToItem, updateItem, aboutItem] {
             item.target = self
             menu.addItem(item)
         }
@@ -131,6 +138,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.render()
         }
         triggerCapture.onClose = { [weak self] in self?.pushToTalk.isPaused = false }
+    }
+
+    private func setUpUpdater() {
+        updater.isIdle = { [weak self] in
+            guard let self, case .ready = state else { return false }
+            return Date().timeIntervalSince(lastDictationAt) >= Self.idleBeforeUpdate
+        }
+        updater.start()
+        // The previous instance set this right before restarting into the new version.
+        if UserDefaults.standard.string(forKey: Updater.updatedFromKey) != nil {
+            UserDefaults.standard.removeObject(forKey: Updater.updatedFromKey)
+            overlay.flash("Utter updated to version \(Updater.currentCommit)")
+        }
     }
 
     private func setUpSetupWindow() {
@@ -254,6 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// The key went down. Recording starts right away so no word is lost; all feedback waits for `commitRecording`.
     private func startRecording() {
+        lastDictationAt = Date()
         // A failed dictation shouldn't block the next one.
         switch state {
         case .ready, .failed, .loading: break
@@ -387,6 +408,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .credits: NSAttributedString(string: "Local voice dictation. Powered by Whisper and whisper.cpp; your voice never leaves this Mac.",
                                          attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]),
         ])
+    }
+
+    @objc private func checkForUpdates() {
+        updater.checkNow()
     }
 
     @objc private func changeTrigger() {
