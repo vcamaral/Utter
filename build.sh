@@ -28,8 +28,10 @@ fi
 echo "OK: $APP"
 
 if [[ "${1:-}" == "install" ]]; then
-    pkill -x Utter || true
-    while pgrep -x Utter >/dev/null; do sleep 0.2; done
+    # -a: also when the running app is the one calling this (self-update): pkill and pgrep skip their
+    # own ancestors by default, so the app would never be quit.
+    pkill -a -x Utter || true
+    while pgrep -a -x Utter >/dev/null; do sleep 0.2; done
     mkdir -p ~/Applications
     rm -rf ~/Applications/Utter.app
     cp -R "$APP" ~/Applications/

@@ -21,6 +21,8 @@ final class Updater {
     private var checkTimer: Timer?
     private var idleTimer: Timer?
     private var isBusy = false
+    /// The swap is under way: this instance is about to be replaced, so no more checks.
+    private var isInstalling = false
     /// A remote commit whose update failed: not retried until something newer lands.
     private var failedCommit: String?
 
@@ -49,7 +51,7 @@ final class Updater {
     // MARK: - Private
 
     private func checkAndUpdate(userInitiated: Bool) async {
-        guard let sourceDir, !isBusy else { return }
+        guard let sourceDir, !isBusy, !isInstalling else { return }
         isBusy = true
         defer { isBusy = false }
 
@@ -106,16 +108,21 @@ final class Updater {
     /// `build.sh install` reuses the build from phase 1 (a few seconds), quits this app and opens the new one.
     /// If this app is still running when it ends, the swap failed.
     private func install(in dir: String) {
+        isInstalling = true
+        idleTimer?.invalidate()
         UserDefaults.standard.set(Self.currentCommit, forKey: Self.updatedFromKey)
         let process = Self.makeProcess("./build.sh install >> '\(Self.logURL.path)' 2>&1", in: dir)
         process.terminationHandler = { process in
-            guard process.terminationStatus != 0 else { return }
-            Task { @MainActor in
-                UserDefaults.standard.removeObject(forKey: Self.updatedFromKey)
-                logger.error("update install failed, see \(Self.logURL.path, privacy: .public)")
-            }
+            // On success the script quits this app before it ends, so getting here means it failed.
+            Task { @MainActor in self.installFailed("exit status \(process.terminationStatus)") }
         }
-        do { try process.run() } catch { logger.error("update install failed: \(error.localizedDescription, privacy: .public)") }
+        do { try process.run() } catch { installFailed(error.localizedDescription) }
+    }
+
+    private func installFailed(_ reason: String) {
+        isInstalling = false
+        UserDefaults.standard.removeObject(forKey: Self.updatedFromKey)
+        logger.error("update install failed (\(reason, privacy: .public)), see \(Self.logURL.path, privacy: .public)")
     }
 
     private func showAlert(_ message: String, details: String) {
