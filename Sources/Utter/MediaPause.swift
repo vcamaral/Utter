@@ -1,5 +1,6 @@
 import CoreAudio
 import Foundation
+import IOKit.pwr_mgt
 
 /// Pauses whatever is playing while you dictate, and resumes it afterwards.
 ///
@@ -8,6 +9,10 @@ import Foundation
 ///   Explicit, never the play/pause toggle: a toggle sent with nothing playing would start music.
 /// - CoreAudio's per-process `kAudioProcessPropertyIsRunningOutput` (public, macOS 14.2+) tells which
 ///   apps are putting out sound. MediaRemote's own "is playing" check is locked for third-party apps.
+///
+/// Pause goes to the Now Playing app, which may not be the app making sound: a Slack notification
+/// with Spotify already paused. Pausing then is harmless, but resuming would start Spotify. So only
+/// apps that have been putting out sound for a while count as paused; short sounds are notifications.
 @MainActor
 final class MediaPause {
     private typealias SendCommand = @convention(c) (UInt32, CFDictionary?) -> Bool
@@ -23,6 +28,8 @@ final class MediaPause {
 
     /// Players release the audio output a while after pausing (Spotify takes ~2.3 s).
     private static let quietTimeout: Duration = .seconds(4)
+    /// Apps keep their output running for a while after a notification sound (Slack, ~10 s).
+    private static let notificationLength: TimeInterval = 15
 
     /// Apps that were playing when this paused them; empty when nothing is paused.
     private var pausedApps: Set<pid_t> = []
@@ -34,7 +41,10 @@ final class MediaPause {
         guard pausedApps.isEmpty else { return }   // still paused from the previous dictation
         let playing = Self.appsPlayingAudio()
         guard !playing.isEmpty, Self.sendCommand?(Self.pause, nil) == true else { return }
-        pausedApps = playing
+        let started = Self.outputStartDates()
+        let settled = Date.now.addingTimeInterval(-Self.notificationLength)
+        // No start date (macOS stopped reporting it): count the app, so resuming still works.
+        pausedApps = playing.filter { (started[$0] ?? .distantPast) <= settled }
     }
 
     func recordingEnded() {
@@ -76,6 +86,24 @@ final class MediaPause {
             }
         }
         return playing
+    }
+
+    /// Since when each app has been putting out sound. CoreAudio holds a power assertion on behalf
+    /// of every app whose output is running, and IOKit says when it was taken.
+    private static func outputStartDates() -> [pid_t: Date] {
+        var byProcess: Unmanaged<CFDictionary>?
+        guard IOPMCopyAssertionsByProcess(&byProcess) == kIOReturnSuccess,
+              let assertions = byProcess?.takeRetainedValue() as? [NSNumber: [[String: Any]]]
+        else { return [:] }
+        var started: [pid_t: Date] = [:]
+        for assertion in assertions.values.joined() {
+            guard let resources = assertion["ResourcesUsed"] as? [String], resources.contains("audio-out"),
+                  let pid = (assertion["AssertionOnBehalfOfPID"] as? NSNumber)?.int32Value,
+                  let date = assertion["AssertStartWhen"] as? Date
+            else { continue }
+            started[pid] = min(date, started[pid] ?? date)
+        }
+        return started
     }
 
     private static func read(_ selector: AudioObjectPropertySelector, of object: AudioObjectID) -> UInt32? {
