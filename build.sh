@@ -1,6 +1,6 @@
 #!/bin/bash
 # Usage: ./build.sh          -> builds build/Utter.app
-#        ./build.sh install  -> builds, installs to ~/Applications and launches
+#        ./build.sh install  -> builds, installs to /Applications and launches
 #        ./build.sh release  -> builds build/Utter.app for distribution (scripts/make-dmg.sh), not tied to this clone
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -36,10 +36,11 @@ if [[ "${1:-}" == "install" ]]; then
     # own ancestors by default, so the app would never be quit.
     pkill -a -x Utter || true
     while pgrep -a -x Utter >/dev/null; do sleep 0.2; done
-    mkdir -p ~/Applications
-    rm -rf ~/Applications/Utter.app
-    cp -R "$APP" ~/Applications/
+    # /Applications, like the DMG and Homebrew: a second copy elsewhere shares the bundle ID, so macOS
+    # shows one set of permission toggles for both, and they only work for one of them.
+    rm -rf /Applications/Utter.app
+    cp -R "$APP" /Applications/
     # LaunchServices sometimes refuses to open a bundle it hasn't registered yet (error -600): retry.
-    for _ in 1 2 3 4 5; do open ~/Applications/Utter.app 2>/dev/null && break; sleep 1; done
-    echo "Installed to ~/Applications/Utter.app"
+    for _ in 1 2 3 4 5; do open /Applications/Utter.app 2>/dev/null && break; sleep 1; done
+    echo "Installed to /Applications/Utter.app"
 fi

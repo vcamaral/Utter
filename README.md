@@ -55,7 +55,7 @@ gh repo clone vcamaral/Utter ~/Code/utter
 ~/Code/utter/install.sh
 ```
 
-`install.sh` checks the prerequisites, builds the app into `~/Applications` and opens it. The first build compiles
+`install.sh` checks the prerequisites, builds the app into `/Applications` and opens it. The first build compiles
 whisper.cpp into `vendor/` (about 15 seconds); it's linked statically, so the app doesn't depend on Homebrew.
 
 A build from a clone updates itself from that clone: it checks the git remote every couple of hours, pulls and builds
