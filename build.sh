@@ -38,7 +38,7 @@ if [[ "${1:-}" == "install" ]]; then
     while pgrep -a -x Utter >/dev/null; do sleep 0.2; done
     # /Applications, like the DMG and Homebrew: a second copy elsewhere shares the bundle ID, so macOS
     # shows one set of permission toggles for both, and they only work for one of them.
-    rm -rf /Applications/Utter.app
+    rm -rf /Applications/Utter.app ~/Applications/Utter.app   # earlier versions installed into ~/Applications
     cp -R "$APP" /Applications/
     # LaunchServices sometimes refuses to open a bundle it hasn't registered yet (error -600): retry.
     for _ in 1 2 3 4 5; do open /Applications/Utter.app 2>/dev/null && break; sleep 1; done
